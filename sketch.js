@@ -5,6 +5,7 @@ const STATIC_PARTICLE_CHARGE = 1e-9; // coulombs
 const DYNAMIC_PARTICLE_CHARGE = 1e-9; // coulombs
 const DYNAMIC_PARTICLE_MASS = 3e-9; // kilograms
 const DYNAMIC_PARTICLE_SUBSTEPS = 25;
+const DYNAMIC_DIPOLE_SPACING = 0.5; // meters
 
 const PIXELS_PER_METER = 100;
 const METERS_PER_PIXEL = 1 / PIXELS_PER_METER;
@@ -12,6 +13,8 @@ const METERS_PER_PIXEL = 1 / PIXELS_PER_METER;
 const TRACER_STEPS_PER_FRAME = 10;
 const TRACER_STEP_DISTANCE = 0.025; // meters
 const TRACER_ARROW_SIZE = 3; // pixels
+
+const TOO_CLOSE = 6 / PIXELS_PER_METER;
 
 function getColorForCharge(charge) {
   if (charge > 0) {
@@ -38,23 +41,46 @@ class StaticParticle {
   }
 }
 
-function getNetElecPotential(particles, x, y) {
+function getElecPotential(particle, x, y) {
+  let dx = x - particle.x;
+  let dy = y - particle.y;
+  let distSquared = dx * dx + dy * dy;
+  let dist = sqrt(distSquared);
+
+  let elecPotential = K * particle.charge / distSquared;
+  return {
+    x: dx / dist * elecPotential,
+    y: dy / dist * elecPotential,
+    dist: dist
+  };
+}
+
+function getNetElecPotential(particles, dynamics, x, y) {
   let netPotentialX = 0;
   let netPotentialY = 0;
   let closestDist = Infinity;
   
   for (let particle of particles) {
-    let dx = x - particle.x;
-    let dy = y - particle.y;
-    let distSquared = dx * dx + dy * dy;
-    let dist = sqrt(distSquared);
+    let potential = getElecPotential(particle, x, y);
+    netPotentialX += potential.x;
+    netPotentialY += potential.y;
 
-    let elecPotential = K * particle.charge / distSquared;
-    netPotentialX += dx / dist * elecPotential;
-    netPotentialY += dy / dist * elecPotential;
-    
-    if (dist < closestDist) {
-      closestDist = dist;
+    if (potential.dist < closestDist) {
+      closestDist = potential.dist;
+    }
+  }
+  
+  for (let dynamic of dynamics) {
+    for (let location of dynamic.getChargeLocations()) {
+      let potential = getElecPotential(location, x, y);
+      
+      // This has two purposes:
+      // 1. Prevent particle from trying to put force on itself
+      // 2. Prevent particles that are too close from breaking the simulation
+      if (potential.dist > TOO_CLOSE) {
+        netPotentialX += potential.x;
+        netPotentialY += potential.y;
+      }
     }
   }
   
@@ -71,35 +97,55 @@ class DynamicParticle {
     this.velX = this.velY = 0;
   }
   
-  updateAndDraw(g, particles, totalDt) {
-    for (let i = 0; i < DYNAMIC_PARTICLE_SUBSTEPS; i++) {
-      let {x: netX, y: netY, closestDist} = getNetElecPotential(particles, this.x, this.y);
+  getChargeLocations() {
+    return [
+      {x: this.x, y: this.y, charge: this.charge}
+    ];
+  }
+  
+  update(particles, dynamics, dt) {
+    let {x: netX, y: netY, closestDist} = getNetElecPotential(particles, dynamics, this.x, this.y);
       
-      // Too close to particle, reaches limits of numerical precision, so
-      // stop here to prevent achieving ludicrous speed
-      if (closestDist < 4 / PIXELS_PER_METER)
-        return;
-      
-      // Calculate electric force from potential
-      netX *= this.charge;
-      netY *= this.charge;
-      
-      let accelX = netX / this.mass;
-      let accelY = netY / this.mass;
-      
-      let dt = totalDt / DYNAMIC_PARTICLE_SUBSTEPS;
-      this.velX += accelX * dt;
-      this.velY += accelY * dt;
-      this.x += this.velX * dt;
-      this.y += this.velY * dt;
-    }
+    // Too close to particle, reaches limits of numerical precision, so
+    // stop here to prevent achieving ludicrous speed
+    if (closestDist < TOO_CLOSE)
+      return false;
+
+    // Calculate electric force from potential
+    netX *= this.charge;
+    netY *= this.charge;
+
+    let accelX = netX / this.mass;
+    let accelY = netY / this.mass;
+
+    this.velX += accelX * dt;
+    this.velY += accelY * dt;
+    this.x += this.velX * dt;
+    this.y += this.velY * dt;
     
+    return true;
+  }
+  
+  draw(g) {
     g.ellipseMode(CENTER);
     g.strokeWeight(METERS_PER_PIXEL);
     g.stroke(0);
     g.fill(255, 255, 0); // Yellow
     g.ellipse(this.x, this.y, 10 * METERS_PER_PIXEL, 10 * METERS_PER_PIXEL);
   }
+}
+
+// Gets magnitude of the perpendicular component of B on A
+function perpComponent(ax, ay, bx, by) {
+  // Find unit vector perpendicular and to the left of A
+  let magA = sqrt(ax * ax + ay * ay);
+  let perpAX = -ay / magA;
+  let perpAY = ax / magA;
+
+  // Dot product of perpendicular vector and B
+  // = |P||B|cos(theta), |P| = 1 so this gives |B|cos(theta), which
+  // is the perpendicular component
+  return perpAX * bx + perpAY * by;
 }
 
 class DynamicDipole {
@@ -122,58 +168,61 @@ class DynamicDipole {
     this.moi = mass1 * this.offset1 * this.offset1 + mass2 * this.offset2 * this.offset2;
   }
   
-  updateAndDraw(g, particles, totalDt) {
-    // Gets magnitude of the perpendicular component of B on A
-    function perpComponent(ax, ay, bx, by) {
-      // Find unit vector perpendicular and to the left of A
-      let magA = sqrt(ax * ax + ay * ay);
-      let perpAX = -ay / magA;
-      let perpAY = ax / magA;
-      
-      // Dot product of perpendicular vector and B
-      // = |P||B|cos(theta), |P| = 1 so this gives |B|cos(theta), which
-      // is the perpendicular component
-      return perpAX * bx + perpAY * by;
-    }
+  getChargeLocations() {
+    let sinAngle = sin(this.angle);
+    let cosAngle = cos(this.angle);
+
+    let x1 = this.x + this.offset1 * cosAngle;
+    let y1 = this.y + this.offset1 * sinAngle;
+    let x2 = this.x + this.offset2 * cosAngle;
+    let y2 = this.y + this.offset2 * sinAngle;
     
-    for (let i = 0; i < DYNAMIC_PARTICLE_SUBSTEPS; i++) {
-      let sinAngle = sin(this.angle);
-      let cosAngle = cos(this.angle);
-      
-      let x1 = this.x + this.offset1 * cosAngle;
-      let y1 = this.y + this.offset1 * sinAngle;
-      let x2 = this.x + this.offset2 * cosAngle;
-      let y2 = this.y + this.offset2 * sinAngle;
-      
-      let potential1 = getNetElecPotential(particles, x1, y1);
-      let potential2 = getNetElecPotential(particles, x2, y2);
-      
-      if (potential1.closestDist < 4 / PIXELS_PER_METER || potential2.closestDist < 4 / PIXELS_PER_METER) {
-        return;
-      }
-      
-      let force1 = {x: potential1.x * this.charge1, y: potential1.y * this.charge1};
-      let force2 = {x: potential2.x * this.charge2, y: potential2.y * this.charge2};
-      
-      let torque1 = perpComponent(x1 - this.x, y1 - this.y, force1.x, force1.y) * this.offset1;
-      let torque2 = perpComponent(x2 - this.x, y2 - this.y, force2.x, force2.y) * this.offset2;
-      
-      // F = ma => a = F/m
-      let accelX = (force1.x + force2.x) / this.mass;
-      let accelY = (force1.y + force2.y) / this.mass;
-      
-      // T = Ia => a = T/I
-      let rotAccel = (torque1 + torque2) / this.moi;
-      
-      let dt = totalDt / DYNAMIC_PARTICLE_SUBSTEPS;
-      this.velX += accelX * dt;
-      this.velY += accelY * dt;
-      this.rotVel += rotAccel * dt;
-      this.x += this.velX * dt;
-      this.y += this.velY * dt;
-      this.angle += this.rotVel * dt;
+    return [
+      {x: x1, y: y1, charge: this.charge1},
+      {x: x2, y: y2, charge: this.charge2}
+    ];
+  }
+  
+  update(particles, dynamics, dt) {
+    let sinAngle = sin(this.angle);
+    let cosAngle = cos(this.angle);
+
+    let x1 = this.x + this.offset1 * cosAngle;
+    let y1 = this.y + this.offset1 * sinAngle;
+    let x2 = this.x + this.offset2 * cosAngle;
+    let y2 = this.y + this.offset2 * sinAngle;
+
+    let potential1 = getNetElecPotential(particles, dynamics, x1, y1);
+    let potential2 = getNetElecPotential(particles, dynamics, x2, y2);
+
+    if (potential1.closestDist < TOO_CLOSE || potential2.closestDist < TOO_CLOSE) {
+      return false;
     }
+
+    let force1 = {x: potential1.x * this.charge1, y: potential1.y * this.charge1};
+    let force2 = {x: potential2.x * this.charge2, y: potential2.y * this.charge2};
+
+    let torque1 = perpComponent(x1 - this.x, y1 - this.y, force1.x, force1.y) * this.offset1;
+    let torque2 = perpComponent(x2 - this.x, y2 - this.y, force2.x, force2.y) * this.offset2;
+
+    // F = ma => a = F/m
+    let accelX = (force1.x + force2.x) / this.mass;
+    let accelY = (force1.y + force2.y) / this.mass;
+
+    // T = Ia => a = T/I
+    let rotAccel = (torque1 + torque2) / this.moi;
+
+    this.velX += accelX * dt;
+    this.velY += accelY * dt;
+    this.rotVel += rotAccel * dt;
+    this.x += this.velX * dt;
+    this.y += this.velY * dt;
+    this.angle += this.rotVel * dt;
     
+    return true;
+  }
+  
+  draw(g) {
     g.strokeWeight(METERS_PER_PIXEL);
     g.push();
     g.translate(this.x, this.y);
@@ -205,7 +254,8 @@ class FlowLineTracer {
       let prevX = this.x;
       let prevY = this.y;
       
-      let {x: netX, y: netY} = getNetElecPotential(particles, this.x, this.y);
+      // Don't pass dynamics, the flow lines only show static particles
+      let {x: netX, y: netY} = getNetElecPotential(particles, [], this.x, this.y);
       
       // Normalize direction
       let netPotential = sqrt(netX * netX + netY * netY);
@@ -254,6 +304,7 @@ let dynamics = [];
 let tracersPerParticle = 20;
 let arrowsEnabled = true;
 let arrowSpacing = 1; // meters
+let dynamicsInteract = false;
 
 function preload() {
   font = loadFont("assets/Roboto-Light.ttf");
@@ -327,10 +378,22 @@ function draw() {
   }
   fieldGraphics.pop();
   
+  let interact = dynamicsInteract ? dynamics : [];
+  let dt = 1 / 30.0;
+  for (let i = 0; i < DYNAMIC_PARTICLE_SUBSTEPS; i++) {
+    for (let j = 0; j < dynamics.length; j++) {
+      let keep = dynamics[j].update(particles, interact, dt / DYNAMIC_PARTICLE_SUBSTEPS);
+      if (!keep) {
+        dynamics.splice(j, 1);
+        j--;
+      }
+    }
+  }
+  
   dynamicsGraphics.push();
   setUpCoordinates(dynamicsGraphics);
   for (let particle of dynamics) {
-    particle.updateAndDraw(dynamicsGraphics, particles, 1 / 30.0);
+    particle.draw(dynamicsGraphics);
   }
   dynamicsGraphics.pop();
   
@@ -340,7 +403,7 @@ function draw() {
   fill(196);
   stroke(0);
   strokeWeight(1);
-  rect(0, 0, textWidth("Left/right arrows to change arrow spacing") + 10, 220);
+  rect(0, 0, textWidth("Press I to toggle forces between dynamics") + 10, 250);
   
   fill(0);
   text("Left click to place positive particle", 4, 15);
@@ -358,6 +421,8 @@ function draw() {
   text("Press P to place dynamic (+) particle", 4, 180);
   text("Press D to place dynamic dipole", 4, 195);
   text("Press C to remove all dynamic particles", 4, 210);
+  text("Press I to toggle forces between dynamics", 4, 225);
+  text("Dynamic interactions are " + (dynamicsInteract ? "ON" : "OFF"), 4, 240);
 }
 
 function getMousePosition() {
@@ -392,12 +457,19 @@ function keyPressed() {
   } else if (key == 'a') {
     arrowsEnabled = !arrowsEnabled;
     clearField();
+  } else if (key == 'i') {
+    dynamicsInteract = !dynamicsInteract;
   } else if (key == 'p') {
     let {x, y} = getMousePosition();
     dynamics.push(new DynamicParticle(x, y, DYNAMIC_PARTICLE_CHARGE, DYNAMIC_PARTICLE_MASS));
   } else if (key == 'd') {
     let {x, y} = getMousePosition();
-    dynamics.push(new DynamicDipole(x, y, DYNAMIC_PARTICLE_CHARGE, -DYNAMIC_PARTICLE_CHARGE, DYNAMIC_PARTICLE_MASS, DYNAMIC_PARTICLE_MASS, 0.5));
+    dynamics.push(new DynamicDipole(
+      x, y,
+      DYNAMIC_PARTICLE_CHARGE, -DYNAMIC_PARTICLE_CHARGE,
+      DYNAMIC_PARTICLE_MASS, DYNAMIC_PARTICLE_MASS,
+      DYNAMIC_DIPOLE_SPACING
+    ));
   } else if (key == 'c') {
     clearDynamicsGraphics();
     dynamics = [];
