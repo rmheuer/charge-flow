@@ -435,6 +435,9 @@ function getMousePosition() {
 // Always fill the whole screen
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
+
+  fieldGraphics.remove();
+  dynamicsGraphics.remove();
   
   fieldGraphics = createGraphics(windowWidth, windowHeight);
   dynamicsGraphics = createGraphics(windowWidth, windowHeight);
