@@ -156,7 +156,7 @@ class DynamicDipole {
       let force2 = {x: potential2.x * this.charge2, y: potential2.y * this.charge2};
       
       let torque1 = perpComponent(x1 - this.x, y1 - this.y, force1.x, force1.y) * this.offset1;
-      let torque2 = perpComponent(x2 - this.x, y2 - this.y, force2.x, force2.y);
+      let torque2 = perpComponent(x2 - this.x, y2 - this.y, force2.x, force2.y) * this.offset2;
       
       // F = ma => a = F/m
       let accelX = (force1.x + force2.x) / this.mass;
