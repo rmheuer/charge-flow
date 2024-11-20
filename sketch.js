@@ -13,6 +13,14 @@ const TRACER_STEPS_PER_FRAME = 10;
 const TRACER_STEP_DISTANCE = 0.025; // meters
 const TRACER_ARROW_SIZE = 3; // pixels
 
+function getColorForCharge(charge) {
+  if (charge > 0) {
+    return color(255, 0, 0); // Red
+  } else {
+    return color(0, 0, 255); // Blue
+  }
+}
+
 // Effectively a particle with infinite mass so it won't ever move
 class StaticParticle {
   constructor(x, y, charge) {
@@ -22,15 +30,10 @@ class StaticParticle {
   }
   
   draw(g) {
-    if (this.charge > 0) {
-      g.fill(255, 0, 0); // Red
-    } else {
-      g.fill(0, 0, 255); // Blue
-    }
-    
     g.ellipseMode(CENTER);
     g.strokeWeight(METERS_PER_PIXEL);
     g.stroke(0);
+    g.fill(getColorForCharge(this.charge));
     g.ellipse(this.x, this.y, 15 * METERS_PER_PIXEL, 15 * METERS_PER_PIXEL);
   }
 }
@@ -96,6 +99,94 @@ class DynamicParticle {
     g.stroke(0);
     g.fill(255, 255, 0); // Yellow
     g.ellipse(this.x, this.y, 10 * METERS_PER_PIXEL, 10 * METERS_PER_PIXEL);
+  }
+}
+
+class DynamicDipole {
+  constructor(x, y, charge1, charge2, mass1, mass2, spacing) {
+    this.x = x;
+    this.y = y;
+    this.angle = 0;
+    this.charge1 = charge1;
+    this.charge2 = charge2;
+    
+    this.velX = this.velY = 0;
+    this.rotVel = 0;
+    
+    // Position particles such that center of mass is at the center of rotation
+    let c = mass2 * spacing / (mass1 + mass2);
+    this.offset1 = -c;
+    this.offset2 = spacing - c;
+    
+    this.mass = mass1 + mass2;
+    this.moi = mass1 * this.offset1 * this.offset1 + mass2 * this.offset2 * this.offset2;
+  }
+  
+  updateAndDraw(g, particles, totalDt) {
+    // Gets magnitude of the perpendicular component of B on A
+    function perpComponent(ax, ay, bx, by) {
+      // Find unit vector perpendicular and to the left of A
+      let magA = sqrt(ax * ax + ay * ay);
+      let perpAX = -ay / magA;
+      let perpAY = ax / magA;
+      
+      // Dot product of perpendicular vector and B
+      // = |P||B|cos(theta), |P| = 1 so this gives |B|cos(theta), which
+      // is the perpendicular component
+      return perpAX * bx + perpAY * by;
+    }
+    
+    for (let i = 0; i < DYNAMIC_PARTICLE_SUBSTEPS; i++) {
+      let sinAngle = sin(this.angle);
+      let cosAngle = cos(this.angle);
+      
+      let x1 = this.x + this.offset1 * cosAngle;
+      let y1 = this.y + this.offset1 * sinAngle;
+      let x2 = this.x + this.offset2 * cosAngle;
+      let y2 = this.y + this.offset2 * sinAngle;
+      
+      let potential1 = getNetElecPotential(particles, x1, y1);
+      let potential2 = getNetElecPotential(particles, x2, y2);
+      
+      if (potential1.closestDist < 4 / PIXELS_PER_METER || potential2.closestDist < 4 / PIXELS_PER_METER) {
+        return;
+      }
+      
+      let force1 = {x: potential1.x * this.charge1, y: potential1.y * this.charge1};
+      let force2 = {x: potential2.x * this.charge2, y: potential2.y * this.charge2};
+      
+      let torque1 = perpComponent(x1 - this.x, y1 - this.y, force1.x, force1.y) * this.offset1;
+      let torque2 = perpComponent(x2 - this.x, y2 - this.y, force2.x, force2.y);
+      
+      // F = ma => a = F/m
+      let accelX = (force1.x + force2.x) / this.mass;
+      let accelY = (force1.y + force2.y) / this.mass;
+      
+      // T = Ia => a = T/I
+      let rotAccel = (torque1 + torque2) / this.moi;
+      
+      let dt = totalDt / DYNAMIC_PARTICLE_SUBSTEPS;
+      this.velX += accelX * dt;
+      this.velY += accelY * dt;
+      this.rotVel += rotAccel * dt;
+      this.x += this.velX * dt;
+      this.y += this.velY * dt;
+      this.angle += this.rotVel * dt;
+    }
+    
+    g.strokeWeight(METERS_PER_PIXEL);
+    g.push();
+    g.translate(this.x, this.y);
+    g.rotate(this.angle);
+    g.stroke(0, 64);
+    g.line(this.offset1, 0, this.offset2, 0);
+    g.stroke(0);
+    g.ellipseMode(CENTER);
+    g.fill(getColorForCharge(this.charge1));
+    g.ellipse(this.offset1, 0, 10 * METERS_PER_PIXEL, 10 * METERS_PER_PIXEL);
+    g.fill(getColorForCharge(this.charge2));
+    g.ellipse(this.offset2, 0, 10 * METERS_PER_PIXEL, 10 * METERS_PER_PIXEL);
+    g.pop();
   }
 }
 
@@ -249,7 +340,7 @@ function draw() {
   fill(196);
   stroke(0);
   strokeWeight(1);
-  rect(0, 0, textWidth("Left/right arrows to change arrow spacing") + 10, 205);
+  rect(0, 0, textWidth("Left/right arrows to change arrow spacing") + 10, 220);
   
   fill(0);
   text("Left click to place positive particle", 4, 15);
@@ -265,7 +356,8 @@ function draw() {
   text("Current arrow spacing: " + nf(arrowSpacing, 0, 1), 4, 155);
   
   text("Press P to place dynamic (+) particle", 4, 180);
-  text("Press C to remove all dynamic particles", 4, 195);
+  text("Press D to place dynamic dipole", 4, 195);
+  text("Press C to remove all dynamic particles", 4, 210);
 }
 
 function getMousePosition() {
@@ -303,6 +395,9 @@ function keyPressed() {
   } else if (key == 'p') {
     let {x, y} = getMousePosition();
     dynamics.push(new DynamicParticle(x, y, DYNAMIC_PARTICLE_CHARGE, DYNAMIC_PARTICLE_MASS));
+  } else if (key == 'd') {
+    let {x, y} = getMousePosition();
+    dynamics.push(new DynamicDipole(x, y, DYNAMIC_PARTICLE_CHARGE, -DYNAMIC_PARTICLE_CHARGE, DYNAMIC_PARTICLE_MASS, DYNAMIC_PARTICLE_MASS, 0.5));
   } else if (key == 'c') {
     clearDynamicsGraphics();
     dynamics = [];
