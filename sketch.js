@@ -41,50 +41,50 @@ class StaticParticle {
   }
 }
 
-function getElecPotential(particle, x, y) {
+function getElecField(particle, x, y) {
   let dx = x - particle.x;
   let dy = y - particle.y;
   let distSquared = dx * dx + dy * dy;
   let dist = sqrt(distSquared);
 
-  let elecPotential = K * particle.charge / distSquared;
+  let elecField = K * particle.charge / distSquared;
   return {
-    x: dx / dist * elecPotential,
-    y: dy / dist * elecPotential,
+    x: dx / dist * elecField,
+    y: dy / dist * elecField,
     dist: dist
   };
 }
 
-function getNetElecPotential(particles, dynamics, x, y) {
-  let netPotentialX = 0;
-  let netPotentialY = 0;
+function getNetElecField(particles, dynamics, x, y) {
+  let netFieldX = 0;
+  let netFieldY = 0;
   let closestDist = Infinity;
   
   for (let particle of particles) {
-    let potential = getElecPotential(particle, x, y);
-    netPotentialX += potential.x;
-    netPotentialY += potential.y;
+    let field = getElecField(particle, x, y);
+    netFieldX += field.x;
+    netFieldY += field.y;
 
-    if (potential.dist < closestDist) {
-      closestDist = potential.dist;
+    if (field.dist < closestDist) {
+      closestDist = field.dist;
     }
   }
   
   for (let dynamic of dynamics) {
     for (let location of dynamic.getChargeLocations()) {
-      let potential = getElecPotential(location, x, y);
+      let field = getElecField(location, x, y);
       
       // This has two purposes:
       // 1. Prevent particle from trying to put force on itself
       // 2. Prevent particles that are too close from breaking the simulation
-      if (potential.dist > TOO_CLOSE) {
-        netPotentialX += potential.x;
-        netPotentialY += potential.y;
+      if (field.dist > TOO_CLOSE) {
+        netFieldX += field.x;
+        netFieldY += field.y;
       }
     }
   }
   
-  return {x: netPotentialX, y: netPotentialY, closestDist: closestDist};
+  return {x: netFieldX, y: netFieldY, closestDist: closestDist};
 }
 
 class DynamicParticle {
@@ -104,7 +104,7 @@ class DynamicParticle {
   }
   
   update(particles, dynamics, dt) {
-    let {x: netX, y: netY, closestDist} = getNetElecPotential(particles, dynamics, this.x, this.y);
+    let {x: netX, y: netY, closestDist} = getNetElecField(particles, dynamics, this.x, this.y);
       
     // Too close to particle, reaches limits of numerical precision, so
     // stop here to prevent achieving ludicrous speed
@@ -192,15 +192,15 @@ class DynamicDipole {
     let x2 = this.x + this.offset2 * cosAngle;
     let y2 = this.y + this.offset2 * sinAngle;
 
-    let potential1 = getNetElecPotential(particles, dynamics, x1, y1);
-    let potential2 = getNetElecPotential(particles, dynamics, x2, y2);
+    let field1 = getNetElecField(particles, dynamics, x1, y1);
+    let field2 = getNetElecField(particles, dynamics, x2, y2);
 
-    if (potential1.closestDist < TOO_CLOSE || potential2.closestDist < TOO_CLOSE) {
+    if (field1.closestDist < TOO_CLOSE || field2.closestDist < TOO_CLOSE) {
       return false;
     }
 
-    let force1 = {x: potential1.x * this.charge1, y: potential1.y * this.charge1};
-    let force2 = {x: potential2.x * this.charge2, y: potential2.y * this.charge2};
+    let force1 = {x: field1.x * this.charge1, y: field1.y * this.charge1};
+    let force2 = {x: field2.x * this.charge2, y: field2.y * this.charge2};
 
     let torque1 = perpComponent(x1 - this.x, y1 - this.y, force1.x, force1.y) * abs(this.offset1);
     let torque2 = perpComponent(x2 - this.x, y2 - this.y, force2.x, force2.y) * abs(this.offset2);
@@ -255,7 +255,7 @@ class FlowLineTracer {
       let prevY = this.y;
       
       // Don't pass dynamics, the flow lines only show static particles
-      let {x: netX, y: netY} = getNetElecPotential(particles, [], this.x, this.y);
+      let {x: netX, y: netY} = getNetElecField(particles, [], this.x, this.y);
       
       // Normalize direction
       let netPotential = sqrt(netX * netX + netY * netY);
