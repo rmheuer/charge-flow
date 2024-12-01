@@ -55,8 +55,7 @@ function getElecField(particle, x, y) {
   return {
     x: dx / dist * elecField,
     y: dy / dist * elecField,
-    potX: dx / dist * elecPotential,
-    potY: dy / dist * elecPotential,
+    pot: elecPotential,
     dist: dist
   };
 }
@@ -64,16 +63,14 @@ function getElecField(particle, x, y) {
 function getNetElecField(particles, dynamics, x, y) {
   let netFieldX = 0;
   let netFieldY = 0;
-  let netPotentialX = 0;
-  let netPotentialY = 0;
+  let totalPotential = 0;
   let closestDist = Infinity;
   
   for (let particle of particles) {
     let field = getElecField(particle, x, y);
     netFieldX += field.x;
     netFieldY += field.y;
-    netPotentialX += field.potX;
-    netPotentialY += field.potY;
+    totalPotential += field.pot;
 
     if (field.dist < closestDist) {
       closestDist = field.dist;
@@ -96,7 +93,7 @@ function getNetElecField(particles, dynamics, x, y) {
     }
   }
   
-  return {x: netFieldX, y: netFieldY, potX: netPotentialX, potY: netPotentialY, closestDist: closestDist};
+  return {x: netFieldX, y: netFieldY, pot: totalPotential, closestDist: closestDist};
 }
 
 class DynamicParticle {
@@ -276,15 +273,13 @@ class FlowLineTracer {
       let prevY = this.y;
       
       // Don't pass dynamics, the flow lines only show static particles
-      let {x: netX, y: netY, potX, potY} = getNetElecField(particles, [], this.x, this.y);
+      let {x: netX, y: netY, pot: netPotential} = getNetElecField(particles, [], this.x, this.y);
       
       // Normalize direction
       let netField = sqrt(netX * netX + netY * netY);
       let dirX = netX / netField;
       let dirY = netY / netField;
-      
-      let netPotential = sqrt(potX * potX + potY * potY);
-      
+            
       g.strokeWeight(METERS_PER_PIXEL);
       g.stroke(0);
       
@@ -308,15 +303,6 @@ class FlowLineTracer {
       this.y += dirY * TRACER_STEP_DISTANCE * this.direction;
       
       g.line(prevX, prevY, this.x, this.y);
-      
-//       if (arrowSpacing > 0) {
-//         this.distSinceArrow += TRACER_STEP_DISTANCE;
-//         if (this.distSinceArrow >= arrowSpacing) {
-//           this.distSinceArrow -= arrowSpacing;
-          
-//           
-//         }
-//       }
     }
   }
 }
