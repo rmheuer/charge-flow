@@ -10,11 +10,14 @@ const DYNAMIC_DIPOLE_SPACING = 0.5; // meters
 const PIXELS_PER_METER = 100;
 const METERS_PER_PIXEL = 1 / PIXELS_PER_METER;
 
-const TRACER_STEPS_PER_FRAME = 10;
-const TRACER_STEP_DISTANCE = 0.025; // meters
+const TRACER_STEPS_PER_FRAME = 25;
+const TRACER_STEP_DISTANCE = 0.005; // meters
 const TRACER_ARROW_SIZE = 3; // pixels
 
 const TOO_CLOSE = 6 / PIXELS_PER_METER;
+
+// Prevents ridiculous amounts of arrows close to particles
+const MAX_ARROW_POTENTIAL = 50; // volts
 
 function getColorForCharge(charge) {
   if (charge > 0) {
@@ -47,10 +50,13 @@ function getElecField(particle, x, y) {
   let distSquared = dx * dx + dy * dy;
   let dist = sqrt(distSquared);
 
-  let elecField = K * particle.charge / distSquared;
+  let elecPotential = K * particle.charge / dist;
+  let elecField = elecPotential / dist;
   return {
     x: dx / dist * elecField,
     y: dy / dist * elecField,
+    potX: dx / dist * elecPotential,
+    potY: dy / dist * elecPotential,
     dist: dist
   };
 }
@@ -58,12 +64,16 @@ function getElecField(particle, x, y) {
 function getNetElecField(particles, dynamics, x, y) {
   let netFieldX = 0;
   let netFieldY = 0;
+  let netPotentialX = 0;
+  let netPotentialY = 0;
   let closestDist = Infinity;
   
   for (let particle of particles) {
     let field = getElecField(particle, x, y);
     netFieldX += field.x;
     netFieldY += field.y;
+    netPotentialX += field.potX;
+    netPotentialY += field.potY;
 
     if (field.dist < closestDist) {
       closestDist = field.dist;
@@ -80,11 +90,13 @@ function getNetElecField(particles, dynamics, x, y) {
       if (field.dist > TOO_CLOSE) {
         netFieldX += field.x;
         netFieldY += field.y;
+        
+        // Don't bother with dynamic potential, it's not used
       }
     }
   }
   
-  return {x: netFieldX, y: netFieldY, closestDist: closestDist};
+  return {x: netFieldX, y: netFieldY, potX: netPotentialX, potY: netPotentialY, closestDist: closestDist};
 }
 
 class DynamicParticle {
@@ -239,6 +251,14 @@ class DynamicDipole {
   }
 }
 
+// Whether "interval" is in [before, after]
+function crossesMultiple(before, after, interval) {
+  let beforePer = before / interval;
+  let afterPer = after / interval;
+
+  return floor(beforePer) != floor(afterPer);
+}
+
 class FlowLineTracer {
   // Direction should be 1 for tracing away from positive particles,
   // and -1 for tracing away from negative particles
@@ -247,6 +267,7 @@ class FlowLineTracer {
     this.y = y;
     this.direction = direction;
     this.distSinceArrow = 0;
+    this.prevPotential = null;
   }
   
   updateAndDraw(g, particles, arrowSpacing) {
@@ -255,12 +276,30 @@ class FlowLineTracer {
       let prevY = this.y;
       
       // Don't pass dynamics, the flow lines only show static particles
-      let {x: netX, y: netY} = getNetElecField(particles, [], this.x, this.y);
+      let {x: netX, y: netY, potX, potY} = getNetElecField(particles, [], this.x, this.y);
       
       // Normalize direction
-      let netPotential = sqrt(netX * netX + netY * netY);
-      let dirX = netX / netPotential;
-      let dirY = netY / netPotential;
+      let netField = sqrt(netX * netX + netY * netY);
+      let dirX = netX / netField;
+      let dirY = netY / netField;
+      
+      let netPotential = sqrt(potX * potX + potY * potY);
+      
+      g.strokeWeight(METERS_PER_PIXEL);
+      g.stroke(0);
+      
+      if (abs(netPotential) < 40 && this.prevPotential != null && crossesMultiple(this.prevPotential, netPotential, arrowSpacing)) {
+        // Towards the left of the line
+        let normalX = -dirY;
+        let normalY = dirX;
+
+        let x = this.x;
+        let y = this.y;
+        let s = TRACER_ARROW_SIZE * METERS_PER_PIXEL;
+        g.line(x, y, x + (normalX - dirX) * s, y + (normalY - dirY) * s);
+        g.line(x, y, x + (-normalX - dirX) * s, y + (-normalY - dirY) * s);
+      }
+      this.prevPotential = netPotential;
       
       // Move slightly in the direction (differential equation approx)
       // Multiply by direction so we step in reverse when tracing away
@@ -268,26 +307,16 @@ class FlowLineTracer {
       this.x += dirX * TRACER_STEP_DISTANCE * this.direction;
       this.y += dirY * TRACER_STEP_DISTANCE * this.direction;
       
-      g.strokeWeight(METERS_PER_PIXEL);
-      g.stroke(0);
       g.line(prevX, prevY, this.x, this.y);
       
-      if (arrowSpacing > 0) {
-        this.distSinceArrow += TRACER_STEP_DISTANCE;
-        if (this.distSinceArrow >= arrowSpacing) {
-          this.distSinceArrow -= arrowSpacing;
+//       if (arrowSpacing > 0) {
+//         this.distSinceArrow += TRACER_STEP_DISTANCE;
+//         if (this.distSinceArrow >= arrowSpacing) {
+//           this.distSinceArrow -= arrowSpacing;
           
-          // Towards the left of the line
-          let normalX = -dirY;
-          let normalY = dirX;
-          
-          let x = this.x;
-          let y = this.y;
-          let s = TRACER_ARROW_SIZE * METERS_PER_PIXEL;
-          g.line(x, y, x + (normalX - dirX) * s, y + (normalY - dirY) * s);
-          g.line(x, y, x + (-normalX - dirX) * s, y + (-normalY - dirY) * s);
-        }
-      }
+//           
+//         }
+//       }
     }
   }
 }
@@ -303,7 +332,7 @@ let dynamics = [];
 
 let tracersPerParticle = 20;
 let arrowsEnabled = true;
-let arrowSpacing = 1; // meters
+let arrowSpacing = 5; // volts
 let dynamicsInteract = false;
 
 function preload() {
@@ -416,7 +445,7 @@ function draw() {
   text("Press A to toggle arrows", 4, 110);
   text("Arrows are: " + (arrowsEnabled ? "ON" : "OFF"), 4, 125);
   text("Left/right arrows to change arrow spacing", 4, 140);
-  text("Current arrow spacing: " + nf(arrowSpacing, 0, 1), 4, 155);
+  text("Current arrow spacing: " + arrowSpacing + " volts/arrow", 4, 155);
   
   text("Press P to place dynamic (+) particle", 4, 180);
   text("Press D to place dynamic dipole", 4, 195);
@@ -476,12 +505,12 @@ function keyPressed() {
   } else if (key == 'c') {
     clearDynamicsGraphics();
     dynamics = [];
-  } else if (key == 'ArrowRight' && arrowSpacing < 4.0) {
-    arrowSpacing += 0.1;
+  } else if (key == 'ArrowRight' && arrowSpacing < 9.9) {
+    arrowSpacing += 1;
     if (arrowsEnabled)
       clearField();
-  } else if (key == 'ArrowLeft' && arrowSpacing > 0.2) {
-    arrowSpacing -= 0.1;
+  } else if (key == 'ArrowLeft' && arrowSpacing > 1.1) {
+    arrowSpacing -= 1;
     if (arrowsEnabled)
       clearField();
   } else if (key == 'ArrowUp' && tracersPerParticle < 64) {
